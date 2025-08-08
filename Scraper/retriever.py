@@ -44,5 +44,47 @@ def fetch_post_comments(topic:str,subreddits:list[str]=["all"],
         print(f"Searching r/{subreddit}...")
         posts=subreddit.search(topic,time_filter=time_filter,limit=post_limit)
         for post in posts:
-            content=(post.title+)
-
+            content=(post.title.rstrip()+ " " + post.selftext.rstrip())
+            if topic.lower() not in content.lower():
+                continue
+            
+            post_comments=[]
+            post.comment_sort="top"
+            post.comments.replace_more(limit=0)
+            for c in post.comments[:comment_limit]:
+                post_comments.append({
+                    "comment_id":c.id,
+                    "text":c.body,
+                    "score":c.score,
+                    "created_at":c.created_utc,
+                    "sort_type":"top",
+                })
+                
+            post.comment_sort="controversial"
+            post.comments.replace_more(limit=0)
+            for c in post.comments[:comment_limit]:
+                post_comments.append({
+                    "comment_id":c.id,
+                    "text":c.body,
+                    "score":c.score,
+                    "created_at":c.created_utc,
+                    "sort_type":"controversial",
+                })
+            
+            
+            seen=set()
+            unique_comments=[]
+            for comment in post_comments:
+                cid=comment["comment_id"]
+                if cid not in seen:
+                    seen.add(cid)
+                    unique_comments.append(comment)
+                    
+            doc = {
+                "_id":post.id,
+                "query_id":query_id,
+                "title":post.title,
+                "subreddit":sub,
+                "topic":topic,
+                "post"
+            }
