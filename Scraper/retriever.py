@@ -86,5 +86,18 @@ def fetch_post_comments(topic:str,subreddits:list[str]=["all"],
                 "title":post.title,
                 "subreddit":sub,
                 "topic":topic,
-                "post"
+                "post_id":post.id,
+                "post_content":content,
+                "comments":unique_comments,
+                "created_at":post.created_utc,
             }
+            
+            ops.append(UpdateOne({"_id": post.id}, {"$set": doc}, upsert=True))
+
+        if ops:
+            posts_collection.bulk_write(ops)
+            print(f"[✔] Saved {len(ops)} posts with comments for query_id: {query_id}")
+        else:
+            print("[!] No matching posts/comments found.")
+
+        return query_id

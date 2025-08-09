@@ -1,29 +1,28 @@
 from langchain_ollama import ChatOllama
-from langchain_core.language_models.chat_models import BaseChatModel
 from typing import Any, List
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.outputs import ChatResult
-from pydantic import PrivateAttr
 
-class DeepSeekWrapper(BaseChatModel):
-    _model_name: str = PrivateAttr()
-    _model: ChatOllama = PrivateAttr()
-    def __init__(self, model_name: str = "deepseek-r1:7b"):
-        #super().__init__()
-        self._model_name = model_name
-        self._model = ChatOllama(model=model_name)
+class DeepSeekChat(ChatOllama):
+    def __init__(self, model_name: str = "deepseek-r1:7b", **kwargs):
+        super().__init__(model=model_name, **kwargs)
+        # Your custom init here
 
     @property
     def _llm_type(self) -> str:
         return "deepseek"
-    
-    def invoke(self,input:Any,config:RunnableConfig|None=None,**kwargs):
-        return self._model.invoke(input)
-    
-    def stream(self,input:Any,config:RunnableConfig|None=None,**kwargs):
-        return self._model.stream(input)
-    
+
+    # Override invoke if you want to add pre/post processing, otherwise no need
+    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs):
+        # Example: add custom logging or input modifications here
+        return super().invoke(input, config=config, **kwargs)
+
+    # Same for stream
+    def stream(self, input: Any, config: RunnableConfig | None = None, **kwargs):
+        return super().stream(input, config=config, **kwargs)
+
+    # Override _generate only if you need to customize generation logic
     def _generate(
         self,
         messages: List[BaseMessage],
@@ -31,4 +30,4 @@ class DeepSeekWrapper(BaseChatModel):
         run_manager: RunnableConfig | None = None,
         **kwargs: Any
     ) -> ChatResult:
-        return self._model._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
