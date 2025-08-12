@@ -121,7 +121,16 @@ def analyze_query(query_id:str):
     
     # Sentiment scoring prompt
     sentiment_prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are an insightful and helpful rater. You give a score from 1 to 5 based on the sentiment of the statement towards the topic along with an explanation for the score."),
+        ("system", """
+         You are an insightful and helpful rater. You give a score from 1-5 based on the sentiment of the statement towards the topic along with an explanation for the score.
+         1 - Strongly Negative
+         2 - Negative
+         3 - Neutral
+         4 - Positive
+         5 - Strongly Positive
+         The score should be based on the overall sentiment of the statement towards the topic.
+         If the statement is not related to the topic, return a score of 3 with an explanation that it is neutral.
+         """),
         ("user", "Topic: {topic}\nStatement: {statement}")
     ])
     
@@ -131,6 +140,8 @@ def analyze_query(query_id:str):
          You will receive a list of comments with the average sentiment score. 
          It is fine to use the average score as a reference, but feel free to adjust the summary if the comments suggest a different sentiment.
          Provide a concise summary of the overall sentiment towards the topic.
+         The goal isn't to capture the sentiment towards discussing the topic.
+         The goal is to capture the sentiment towards the topic itself.
          The summary should be 1-2 sentences long.
          """),
         ("user", "Topic: {topic}\nAverage Sentiment Score: {avg_score}\nComments: {comments}")
