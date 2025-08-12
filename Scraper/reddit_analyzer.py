@@ -2,10 +2,14 @@ import pandas as pd
 import praw 
 from dotenv import load_dotenv
 from pymongo import MongoClient, UpdateOne
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any
+from langchain.prompts import ChatPromptTemplate
 import os
 from bson import ObjectId
+import statistics
 from datetime import datetime
-
+from llm_wrappers import DeepSeekChat
 load_dotenv()
 
 mongo=MongoClient(os.getenv("MONGO_URI"))
@@ -101,3 +105,76 @@ def fetch_post_comments(topic:str,subreddits:list[str]=["all"],
             print("[!] No matching posts/comments found.")
 
         return query_id
+    
+    
+# Model for per-comment sentiment output
+class SentimentOutput(BaseModel):
+    score: int = Field(..., description="Score from 1 to 5 based on sentiment toward the topic")
+    explanation: str = Field(..., description="Explanation for the score")    
+    
+def analyze_query(query_id:str):
+    posts=list(posts_collection.find({"query_id":query_id}))
+    
+    if not posts:
+        print(f"[!] No posts found for query_id: {query_id}")
+        return
+    
+    # Sentiment scoring prompt
+    sentiment_prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are an insightful and helpful rater. You give a score from 1 to 5 based on the sentiment of the statement towards the topic along with an explanation for the score."),
+        ("user", "Topic: {topic}\nStatement: {statement}")
+    ])
+    
+    summary_prompt = ChatPromptTemplate.from_messages([
+        ("system", """
+         You are a summarizer. You summarize the sentiment of all the comments in a post towards the topic.
+         You will receive a list of comments with the average sentiment score. 
+         It is fine to use the average score as a reference, but feel free to adjust the summary if the comments suggest a different sentiment.
+         Provide a concise summary of the overall sentiment towards the topic.
+         The summary should be 1-2 sentences long.
+         """),
+        ("user", "Topic: {topic}\nAverage Sentiment Score: {avg_score}\nComments: {comments}")
+    ])
+    ds = DeepSeekChat()
+    ds_sentiment=ds.with_structured_output(SentimentOutput,method='json_schema')
+    
+    
+    for post in posts:
+        print(f"Analyzing post: {post['title']} in r/{post['subreddit']}")
+        scores = []
+        analyzed_comments=[]
+        for comment in post["comments"]:
+            prompt=sentiment_prompt.invoke({
+                "topic": post["topic"],
+                "statement": comment["text"]
+            })
+            result=ds_sentiment.invoke(prompt)
+            
+            analyzed_comments.append({
+                **comment,
+                "sentiment_score": result.score,
+                "sentiment_explanation": result.explanation
+            })
+            scores.append(result.score)
+            
+        avg_score=statistics.mean(scores) if scores else None
+        
+        prompt=summary_prompt.invoke({
+            "topic": post["topic"],
+            "avg_score": avg_score,
+            "comments": "\n".join([f"{c['text']}" for c in analyzed_comments])
+        })
+        sentiment_summary=ds.invoke(prompt).content
+        posts_collection.update_one(
+            {"_id": post["_id"]},
+            {
+                "$set": {
+                    "comments": analyzed_comments,
+                    "aggregate_sentiment_score": avg_score,
+                    "summary": sentiment_summary
+                }
+            }
+        )
+        print(f"[✔] Analysis completed and saved for query_id: {query_id}")
+        
+        

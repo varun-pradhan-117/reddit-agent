@@ -5,7 +5,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.outputs import ChatResult
 
 class DeepSeekChat(ChatOllama):
-    def __init__(self, model_name: str = "deepseek-r1:7b", **kwargs):
+    def __init__(self, model_name: str = "deepseek-r1:8b", **kwargs):
         super().__init__(model=model_name, **kwargs)
         # Your custom init here
 
@@ -14,9 +14,15 @@ class DeepSeekChat(ChatOllama):
         return "deepseek"
 
     # Override invoke if you want to add pre/post processing, otherwise no need
-    def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs):
+    def invoke(self, input: Any, verbose=False, config: RunnableConfig | None = None, **kwargs):
         # Example: add custom logging or input modifications here
-        return super().invoke(input, config=config, **kwargs)
+        op=super().invoke(input, config=config, **kwargs)
+        if verbose:
+            return op
+        else:
+            key_content=op.content.split("</think>",1)[1]
+            op.content=key_content.strip()
+            return op
 
     # Same for stream
     def stream(self, input: Any, config: RunnableConfig | None = None, **kwargs):
