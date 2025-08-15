@@ -134,6 +134,7 @@ class RedditSearcher:
                 state.clarification_request = result.clarification_request 
                 partial_params={}
                 
+                # Update partial parameters
                 if result.topic:
                     partial_params['topic'] = result.topic
                 if result.subreddits != ["all"]:
@@ -144,6 +145,37 @@ class RedditSearcher:
                     partial_params['post_limit'] = result.post_limit
                 if result.comment_limit != 20:
                     partial_params['comment_limit'] = result.comment_limit
+                state.partial_parameters = partial_params
+
+                clarification_msg=result.clarification_request
+                if state.partial_parameters:
+                    clarification_msg += "\n\nSo far we have:\n" + str(state.partial_parameters)
+                    
+                state.messages.append(HumanMessage(content=clarification_msg))
+            else:
+                # We have enough information to proceed
+                state.input_required = False
+                state.topic = result.topic
+                state.subreddits = result.subreddits
+                state.time_filter = result.time_filter
+                state.post_limit = result.post_limit
+                state.comment_limit = result.comment_limit
+                
+                # Clear partial parameters since we're done
+                state.partial_parameters = {}
+                
+                # Add confirmation message
+                confirmation_msg = f"""Perfect! I'll analyze Reddit sentiment for: "{result.topic}"
+                
+                Parameters:
+                - Subreddits: {', '.join(result.subreddits)}
+                - Time filter: {result.time_filter}
+                - Posts per subreddit: {result.post_limit}
+                - Comments per post: {result.comment_limit}
+
+                Starting data collection..."""
+                
+                state.messages.append(AIMessage(content=confirmation_msg))
                 
             
         except Exception as e:
