@@ -41,7 +41,7 @@ class RedditSearcher:
         self._model=DeepSeekChat(model_name=model_name)
         self.graph=self._build_graph()
         
-        self.structured_model=self._model.with_structured_output(
+        self._structured_model=self._model.with_structured_output(
             ParameterExtraction, method='json_schema'
         )
         
@@ -86,4 +86,66 @@ class RedditSearcher:
         workflow.add_edge("handle_error", END)
         
         return workflow.compile()
+    
+    def _clarify_input(self,state:SentimentState) -> SentimentState:
+        """Clarify input parameters with the user"""
+        try:
+            user_messages=[]
+            for msg in state.messages:
+                if isinstance(msg, HumanMessage):
+                    user_messages.append(msg.content)
+            if not user_messages:
+                state.error_message = "No user input provided."
+                return state
+            
+            combined_context= "\n".join(user_messages)
+            if state.partial_parameters:
+                combined_context += "\n Previously extracted info:" + str(state.partial_parameters)
         
+            clarification_prompt = ([
+                ("system",
+                """
+                You are a parameter extraction assistant for Reddit sentiment analysis.
+                Extract the following information from the user's request(s):
+                - topic: The main topic to analyze (REQUIRED - cannot proceed without this)
+                - subreddits: List of subreddits (default: ["all"])
+                - time_filter: Time period (hour/day/week/month/year/all, default: "week")
+                - post_limit: Number of posts per subreddit (default: 30)
+                - comment_limit: Number of comments per post (default: 20)
+                
+                If you have partial information from previous messages, merge it with new information.
+                
+                CRITICAL: Set needs_clarification=True if:
+                - The topic is missing, unclear, or too vague
+                - You need more specific information to proceed
+                
+                If needs_clarification=True, provide a helpful clarification_request asking for the missing information.
+                """),
+                ("user", "{input}")
+            ])
+            
+            prompt=clarification_prompt.invoke({
+                "input": combined_context
+            })
+            result=self._structured_model.invoke(prompt)
+            if result.needs_clarification:
+                # Store partial parameters for next iteration and request more info
+                state.input_required = True
+                state.clarification_request = result.clarification_request 
+                partial_params={}
+                
+                if result.topic:
+                    partial_params['topic'] = result.topic
+                if result.subreddits != ["all"]:
+                    partial_params['subreddits'] = result.subreddits
+                if result.time_filter != "week":
+                    partial_params['time_filter'] = result.time_filter
+                if result.post_limit != 30:
+                    partial_params['post_limit'] = result.post_limit
+                if result.comment_limit != 20:
+                    partial_params['comment_limit'] = result.comment_limit
+                
+            
+        except Exception as e:
+            state.error_message = f"Error preparing clarification prompt: {str(e)}"
+            return state
