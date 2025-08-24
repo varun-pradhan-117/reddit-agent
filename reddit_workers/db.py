@@ -9,3 +9,6 @@ db = mongo["reddit_sentiment"]
 
 queries_collection = db["queries"]
 posts_collection = db["posts"]
+
+
+

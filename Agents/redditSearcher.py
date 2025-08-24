@@ -1,5 +1,3 @@
-from typing import Any, List, Optional, Dict, Annotated
-from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
@@ -8,11 +6,20 @@ from langchain_core.outputs import ChatResult
 from langchain_core.tools import tool
 from langchain.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
-from reddit_workers.analyzer import analyze_query
-from reddit_workers.scraper import fetch_comments
+from reddit_workers import (
+    queries_collection, 
+    posts_collection, 
+    fetch_comments, 
+    analyze_query
+    )
+import reddit_workers.db as db
+from langgraph.checkpoint.memory import InMemorySaver
+from types import MethodType
+from typing import Optional, List, Dict, Any, Union, Annotated, Literal
+from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.mongodb import MongoDBSaver
 import statistics
-# Import your MongoDB collections
-from reddit_workers.db import queries_collection, posts_collection
+
 from llm_wrappers import DeepSeekChat
 
 class SentimentState(BaseModel):
@@ -20,9 +27,7 @@ class SentimentState(BaseModel):
     messages: Annotated[List[BaseMessage], add_messages] = Field(default_factory=list)
     topic: Optional[str] = None
     subreddits: List[str] = Field(default_factory=lambda: ["all"])
-    time_filter: str = "week"
-    post_limit: int = 30
-    comment_limit: int = 20
+    time_filter: Literal["day", "week", "month", "year", "all"] = "week"
     query_id: Optional[str] = None
     analysis_complete: bool = False
     results_summary: Optional[str] = None
@@ -36,15 +41,17 @@ class ParameterExtraction(BaseModel):
     """Structured output for parameter extraction"""
     topic: Optional[str] = Field(None, description="The main topic to search for")
     subreddits: List[str] = Field(default=["all"], description="List of subreddits to search in")
-    time_filter: str = Field(default="week", description="Time filter: hour, day, week, month, year, all")
-    post_limit: int = Field(default=30, description="Number of posts to fetch per subreddit")
-    comment_limit: int = Field(default=20, description="Number of comments to fetch per post")
+    time_filter: Literal["hour", "day", "week", "month", "year", "all"] = Field(
+        default="week",
+        description="Time filter: hour, day, week, month, year, all"
+    )
     needs_clarification: bool = Field(default=False, description="Whether more information is needed")
     clarification_request: Optional[str] = Field(None, description="What information is missing")
 
 class RedditSearcher:
     def __init__(self, model_name = "deepseek-r1:8b", **kwargs):
         self._model=DeepSeekChat(model_name=model_name)
+        self.checkpointer = InMemorySaver()
         self.graph=self._build_graph()
         
         self._structured_model=self._model.with_structured_output(
@@ -90,8 +97,9 @@ class RedditSearcher:
         )
         workflow.add_edge("generate_summary", END)
         workflow.add_edge("handle_error", END)
-        
-        return workflow.compile()
+        # Attach checkpointer
+        self.checkpointer=MongoDBSaver(db.mongo, "reddit_sentiment", "workflow_checkpoints")
+        return workflow.compile(checkpointer=self.checkpointer)
     
     def _clarify_input(self,state:SentimentState) -> SentimentState:
         """Clarify input parameters with the user"""
@@ -116,8 +124,6 @@ class RedditSearcher:
                 - topic: The main topic to analyze (REQUIRED - cannot proceed without this)
                 - subreddits: List of subreddits (default: ["all"])
                 - time_filter: Time period (hour/day/week/month/year/all, default: "week")
-                - post_limit: Number of posts per subreddit (default: 30)
-                - comment_limit: Number of comments per post (default: 20)
                 
                 If you have partial information from previous messages, merge it with new information.
                 
@@ -150,10 +156,6 @@ class RedditSearcher:
                     partial_params['subreddits'] = result.subreddits
                 if result.time_filter != "week":
                     partial_params['time_filter'] = result.time_filter
-                if result.post_limit != 30:
-                    partial_params['post_limit'] = result.post_limit
-                if result.comment_limit != 20:
-                    partial_params['comment_limit'] = result.comment_limit
                 state.partial_parameters = partial_params
 
                 clarification_msg=result.clarification_request
@@ -167,8 +169,6 @@ class RedditSearcher:
                 state.topic = result.topic
                 state.subreddits = result.subreddits
                 state.time_filter = result.time_filter
-                state.post_limit = result.post_limit
-                state.comment_limit = result.comment_limit
                 
                 # Clear partial parameters since we're done
                 state.partial_parameters = {}
@@ -179,8 +179,6 @@ class RedditSearcher:
                 Parameters:
                 - Subreddits: {', '.join(result.subreddits)}
                 - Time filter: {result.time_filter}
-                - Posts per subreddit: {result.post_limit}
-                - Comments per post: {result.comment_limit}
 
                 Starting data collection..."""
                 
@@ -204,8 +202,6 @@ class RedditSearcher:
                 topic=state.topic,
                 subreddits=state.subreddits,
                 time_filter=state.time_filter,
-                post_limit=state.post_limit,
-                comment_limit=state.comment_limit
             )
             state.query_id = query_id
             state.messages.append(AIMessage(content=f"✅ Data collection complete. Query ID: {query_id}"))
@@ -236,8 +232,6 @@ class RedditSearcher:
     def _generate_summary(self, state: SentimentState) -> SentimentState:
         """Generate a final formatted summary of results"""
         try:
-            # Import your MongoDB collections
-            from reddit_workers.db import queries_collection, posts_collection
             
             # Get the analysis results
             query_data = queries_collection.find_one({"_id": state.query_id})
@@ -378,7 +372,7 @@ class RedditSearcher:
         return "error" if state.error_message else "generate_summary"
     
     
-    def run(self, user_input: str, existing_state: Optional[SentimentState] = None) -> Dict[str, Any]:
+    def run(self, user_input: str, config:Dict, existing_state: Optional[SentimentState] = None) -> Dict[str, Any]:
         """Run the sentiment analysis workflow"""
         if existing_state:
             # Continue from existing state with new input
@@ -390,8 +384,27 @@ class RedditSearcher:
                 messages=[HumanMessage(content=user_input)]
             )
         
-        final_state = self.graph.invoke(initial_state)
+        final_state = self.graph.invoke(initial_state,config=config)
         
         return {
             "state": final_state  # Return state for continuation
         }
+        
+    async def run_streaming(self,user_input:str,config:Dict, existing_state:Optional[SentimentState]=None)->Any:
+        """Run the sentiment analysis workflow in streaming mode"""
+        if existing_state:
+            # Continue from existing state with new input
+            existing_state.messages.append(HumanMessage(content=user_input))
+            initial_state = existing_state
+        else:
+            # Start fresh
+            initial_state = SentimentState(
+                messages=[HumanMessage(content=user_input)]
+            )
+        
+        for partial_state in self.graph.stream(initial_state,config=config):
+            yield {
+                "state": partial_state  # Yield intermediate states for streaming
+            }
+            if partial_state.input_required:
+                return  # Stop streaming if more input is needed
